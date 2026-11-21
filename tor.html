@@ -1,0 +1,1501 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>TOROIDAL FIELD // HOLO-SIM</title>
+<!--
+  ============================================================================
+  TOROIDAL ENERGY FIELD — cinematic holographic simulation
+  ----------------------------------------------------------------------------
+  Single file. Three.js (ES modules via importmap), no build step, no assets.
+
+  Sections (search for the banners):
+    1. CONFIG & PRESETS
+    2. RENDERER / SCENE / CAMERA
+    3. SHADERS  (shared GLSL: FIELD MATH lives in FIELD_GLSL)
+    4. PARTICLE FIELD (GPU instanced streaks)
+    5. GUIDE GRID, PROJECTOR PLATE, DUST, HAZE
+    6. POST-PROCESSING (bloom + chromatic aberration + grain + vignette)
+    7. HUD
+    8. UI (lil-gui) & KEYBOARD
+    9. CAMERA DIRECTOR (intro + auto-orbit)
+   10. ANIMATION LOOP
+  ============================================================================
+-->
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+<style>
+  :root {
+    --hud: rgba(150, 232, 255, 0.78);
+    --hud-dim: rgba(150, 232, 255, 0.38);
+    --hud-line: rgba(150, 232, 255, 0.22);
+  }
+  html, body { margin: 0; height: 100%; background: #05070d; overflow: hidden; }
+  canvas { display: block; outline: none; }
+  body.ui-hidden { cursor: none; }
+
+  /* ---------------- HUD ---------------- */
+  #hud {
+    position: fixed; inset: 0; pointer-events: none; z-index: 5;
+    font-family: "JetBrains Mono", "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+    font-size: 10.5px; letter-spacing: 0.14em; color: var(--hud);
+    text-transform: uppercase; opacity: 0; transition: opacity 1.4s ease;
+    text-shadow: 0 0 6px rgba(120, 220, 255, 0.25);
+  }
+  #hud.on { opacity: 0.82; }
+  .bracket { position: absolute; width: 26px; height: 26px; border: 0 solid var(--hud-dim); }
+  .bracket.tl { top: 18px; left: 18px; border-top-width: 1px; border-left-width: 1px; }
+  .bracket.tr { top: 18px; right: 18px; border-top-width: 1px; border-right-width: 1px; }
+  .bracket.bl { bottom: 18px; left: 18px; border-bottom-width: 1px; border-left-width: 1px; }
+  .bracket.br { bottom: 18px; right: 18px; border-bottom-width: 1px; border-right-width: 1px; }
+
+  .panel { position: absolute; line-height: 1.75; }
+  .panel .h { color: var(--hud); border-bottom: 1px solid var(--hud-line); padding-bottom: 4px; margin-bottom: 6px; }
+  .panel .row { display: flex; justify-content: space-between; gap: 22px; color: var(--hud-dim); }
+  .panel .row b { font-weight: 400; color: var(--hud); }
+  #p-tl { top: 34px; left: 40px; width: 270px; }
+  #p-tr { top: 34px; right: 40px; width: 230px; }
+  #p-bl { bottom: 34px; left: 40px; width: 290px; }
+  #p-br { bottom: 34px; right: 40px; width: 270px; }
+  .dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--hud); margin-right: 8px; animation: blink 1.6s infinite; vertical-align: 1px; }
+  @keyframes blink { 50% { opacity: 0.15; } }
+  .bar { height: 2px; background: var(--hud-line); margin: 3px 0 6px; position: relative; overflow: hidden; }
+  .bar i { position: absolute; left: 0; top: 0; bottom: 0; background: var(--hud); transition: width 0.25s; }
+  #spark { display: block; width: 100%; height: 34px; margin-top: 6px; opacity: 0.85; }
+
+  /* compass tape across the top centre */
+  #tape-wrap { position: absolute; top: 26px; left: 50%; transform: translateX(-50%); width: 360px; text-align: center; color: var(--hud-dim); }
+  #tape {
+    height: 10px; margin-bottom: 5px; opacity: 0.6;
+    background-image:
+      repeating-linear-gradient(90deg, var(--hud-dim) 0 1px, transparent 1px 12px),
+      repeating-linear-gradient(90deg, var(--hud) 0 1px, transparent 1px 60px);
+    background-size: 100% 5px, 100% 10px; background-repeat: repeat-x; background-position-y: bottom, bottom;
+    -webkit-mask-image: linear-gradient(90deg, transparent, #000 25%, #000 75%, transparent);
+            mask-image: linear-gradient(90deg, transparent, #000 25%, #000 75%, transparent);
+  }
+  #tape-wrap::after { content: ""; position: absolute; left: 50%; top: -4px; width: 1px; height: 18px; background: var(--hud); }
+
+  /* reticle */
+  #reticle { position: absolute; left: 50%; top: 50%; width: 46px; height: 46px; transform: translate(-50%, -50%); opacity: 0.22; }
+  #reticle::before, #reticle::after { content: ""; position: absolute; background: var(--hud); }
+  #reticle::before { left: 0; right: 0; top: 50%; height: 1px; -webkit-mask: linear-gradient(90deg, #000 35%, transparent 35% 65%, #000 65%); mask: linear-gradient(90deg, #000 35%, transparent 35% 65%, #000 65%); }
+  #reticle::after { top: 0; bottom: 0; left: 50%; width: 1px; -webkit-mask: linear-gradient(#000 35%, transparent 35% 65%, #000 65%); mask: linear-gradient(#000 35%, transparent 35% 65%, #000 65%); }
+
+  #status { position: absolute; bottom: 30px; left: 50%; transform: translateX(-50%); text-align: center; color: var(--hud-dim); white-space: nowrap; }
+  #status .state { color: var(--hud); margin-bottom: 4px; }
+
+  /* boot text during the intro */
+  #boot {
+    position: fixed; left: 50%; top: 62%; transform: translateX(-50%); z-index: 6; pointer-events: none;
+    font-family: "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace; font-size: 11px; letter-spacing: 0.22em;
+    color: rgba(160, 235, 255, 0.7); text-align: left; white-space: pre; transition: opacity 0.9s ease;
+  }
+
+  /* ---------------- lil-gui restyle ---------------- */
+  /* theme variables go on every lil-gui level: each folder re-declares the defaults */
+  .lil-gui.root, .lil-gui.root .lil-gui {
+    --background-color: rgba(6, 10, 18, 0.72);
+    --widget-color: rgba(120, 200, 255, 0.10);
+    --hover-color: rgba(120, 200, 255, 0.18);
+    --focus-color: rgba(120, 200, 255, 0.26);
+    --number-color: #8ff0ff;
+    --string-color: #b7a6ff;
+    --title-background-color: rgba(10, 20, 34, 0.85);
+    --font-family: "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
+    --font-size: 10.5px;
+    --text-color: rgba(200, 238, 255, 0.85);
+  }
+  .lil-gui.root {
+    border: 1px solid rgba(150, 232, 255, 0.16);
+    backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+    transition: opacity 0.8s ease; z-index: 10;
+  }
+
+  /* collapsed panel: a faint, compact tab that wakes up on hover or keyboard focus */
+  .lil-gui.root.closed {
+    width: auto; min-width: 0; opacity: 0.03;
+    border-color: transparent; background: transparent;
+    backdrop-filter: none; -webkit-backdrop-filter: none;
+  }
+  .lil-gui.root.closed > .title { background: transparent; padding-left: 14px; padding-right: 14px; }
+  .lil-gui.root.closed:hover, .lil-gui.root.closed:focus-within { opacity: 0.9; }
+  .lil-gui.root.gui-intro { opacity: 0 !important; pointer-events: none; }  /* hidden during the intro */
+
+    /* control panel position: bottom centre (opens upward) */
+  .lil-gui.root.autoPlace {
+    top: auto; right: auto; bottom: 12px; left: 50%;
+    transform: translateX(-50%);
+    max-height: 70vh;
+  }
+
+  /* list controls (used instead of dropdowns): every option visible, click to pick */
+  .gui-list { padding: 4px 8px 8px; }
+  .gui-list-title { color: var(--text-color); opacity: 0.7; padding: 2px 0 4px; }
+  .gui-list-item {
+    padding: 4px 8px; margin: 2px 0; border-radius: 2px; cursor: pointer; user-select: none;
+    color: rgba(200, 238, 255, 0.6); background: var(--widget-color);
+    border-left: 2px solid transparent; transition: background 0.15s, color 0.15s;
+  }
+  .gui-list-item:hover { background: var(--hover-color); color: rgba(220, 245, 255, 0.95); }
+  .gui-list-item:focus-visible { outline: 1px solid rgba(143, 240, 255, 0.5); outline-offset: -1px; }
+  .gui-list-item.active { background: var(--focus-color); color: #ffffff; border-left-color: #8ff0ff; }
+</style>
+</head>
+<body>
+
+<!-- ============================ HUD MARKUP ============================ -->
+<div id="hud">
+  <div class="bracket tl"></div><div class="bracket tr"></div>
+  <div class="bracket bl"></div><div class="bracket br"></div>
+
+  <div id="tape-wrap"><div id="tape"></div><span id="hud-az">AZ 000.0°  ·  EL 00.0°  ·  FOV 42.0</span></div>
+  <div id="reticle"></div>
+
+  <div class="panel" id="p-tl">
+    <div class="h"><span class="dot"></span>TORUS-7 // FIELD MONITOR</div>
+    <div class="row">containment <b id="hud-state">NOMINAL</b></div>
+    <div class="row">palette <b id="hud-pal">SOLAR</b></div>
+    <div class="row">timecode <b id="hud-tc">00:00:00:00</b></div>
+  </div>
+
+  <div class="panel" id="p-tr">
+    <div class="h">RENDER</div>
+    <div class="row">fps <b id="hud-fps">--</b></div>
+    <div class="row">particles <b id="hud-count">--</b></div>
+    <div class="row">buffer <b id="hud-res">--</b></div>
+    <div class="row">quality <b id="hud-q">--</b></div>
+  </div>
+
+  <div class="panel" id="p-bl">
+    <div class="h">FIELD GEOMETRY</div>
+    <div class="row">twist ratio q <b id="hud-twist">--</b></div>
+    <div class="row">topology <b id="hud-topo">--</b></div>
+    <div class="row">field strength <b id="hud-field">--</b></div>
+    <div class="bar"><i id="hud-field-bar" style="width:40%"></i></div>
+    <div class="row">R / r / shells <b id="hud-geom">--</b></div>
+  </div>
+
+  <div class="panel" id="p-br">
+    <div class="h">TELEMETRY</div>
+    <div class="row">flux Φ <b id="tl-flux">--</b></div>
+    <div class="row">core temp <b id="tl-temp">--</b></div>
+    <div class="row">plasma β <b id="tl-beta">--</b></div>
+    <div class="row">sync <b id="tl-sync">--</b></div>
+    <canvas id="spark" width="270" height="34"></canvas>
+  </div>
+
+  <div id="status">
+    <div class="state" id="hud-flow">▶ FLOW ACTIVE</div>
+    SPACE pause · H hide ui · P pulse · R reset · 1–4 palette
+  </div>
+</div>
+<div id="boot"></div>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
+import GUI from 'three/addons/libs/lil-gui.module.min.js';
+
+/* ============================================================================
+   1. CONFIG & PRESETS
+   ========================================================================== */
+
+const TAU = Math.PI * 2;
+const MAX_PARTICLES = 350000;      // buffers are allocated once at this size
+const VORTEX_FRACTION = 0.26;      // share of particles in the central vortex
+const SPAN_TURNS = 10;             // toroidal turns each field line spans
+const SPAN_W = TAU * SPAN_TURNS;   // line length in toroidal radians
+const VORTEX_WRAP = 4 * Math.PI * 100; // vortex phase wraps here (exactly periodic)
+
+const QUALITY = {
+  Low:   { particles: 60000,  dpr: 1.0 },
+  Med:   { particles: 150000, dpr: 1.5 },
+  Ultra: { particles: 350000, dpr: 2.0 },
+};
+
+// 4 colour stops: outer/dim → mid → accent → hot core (sRGB hex).
+// For 'Spectrum' these 4 only tint the haze, grid and HUD; particles use SPECTRUM_7.
+const PALETTES = {
+  'Spectrum':    ['#14102e', '#a9b8ff', '#ffd27a', '#ffffff'],
+  'Arc Reactor': ['#0a2a7a', '#00d8ff', '#8a5cff', '#f2fbff'],
+  'Solar':       ['#4a0800', '#ff3a12', '#ffa424', '#fff6dc'],
+  'Void':        ['#16063d', '#6a2cff', '#e031d8', '#ffe6fb'],
+};
+const PALETTE_KEYS = Object.keys(PALETTES);
+
+// The 7 main colours: red, orange, yellow, green, blue, indigo, violet.
+// In Spectrum mode they're laid in 7 bands around the ring (see spectrumAt in
+// FIELD_GLSL). In the vortex core all 7 overlap and sum to white, like a prism.
+const SPECTRUM_7 = ['#ff1f1f', '#ff7b00', '#ffe100', '#1fff4f', '#1f6bff', '#4b2dff', '#b52bff'];
+
+const TWIST_PRESETS = {
+  'Golden φ (irrational)': 1.6180339887,
+  '√2 (irrational)': Math.SQRT2,
+  'π (irrational)': Math.PI,
+  '3 : 2 knot': 1.5,
+  '5 : 2 knot': 2.5,
+  '5 : 3 knot': 5 / 3,
+  '2 : 3 knot': 2 / 3,
+};
+
+const params = {
+  // field
+  twist: 1.6180339887,
+  twistPreset: 'Golden φ (irrational)',
+  flowSpeed: 1.0,
+  R: 3.0,
+  r: 1.2,
+  shells: 9,
+  axisBoost: 0.6,      // how much faster particles run on the inner (axis) side
+  shear: 0.0,          // per-shell twist variation (magnetic shear)
+  lineCount: 9,        // distinct field lines per shell
+  vortex: true,
+  vortexMode: 'Fountain (up the core)',
+  mouseAttract: 0.35,
+  // render
+  quality: 'Ultra',
+  particles: QUALITY.Ultra.particles,
+  trail: 0.26,         // seconds of motion each streak covers
+  size: 0.016,         // world-space sprite radius
+  brightness: 1.0,
+  palette: 'Solar',
+  // post
+  bloomStrength: 1.0,
+  bloomRadius: 0.6,
+  bloomThreshold: 0.12,
+  exposure: 1.0,
+  grain: 0.000,
+  vignette: 0.0,
+  aberration: 0.000,
+  // display
+  grid: false,        // guide grid + projector plate (toggle in Display)
+  hud: false,         // HUD overlay (toggle in Display)
+  autoPulse: true,
+  pulseInterval: 200,
+  // camera
+  cameraAuto: true,    // cinematic auto-orbit when idle
+  cameraHold: 900,      // seconds the camera stays where you left it before orbiting again
+};
+
+// Snapshot of the tuned "perfect field" defaults, used by the reset button / R key
+const DEFAULTS = Object.freeze({ ...params });
+
+/* ============================================================================
+   2. RENDERER / SCENE / CAMERA
+   ========================================================================== */
+
+const BG = new THREE.Color('#05070d'); // converted to linear automatically
+
+const renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: 'high-performance' });
+renderer.setClearColor(BG, 1);
+renderer.toneMapping = THREE.NoToneMapping;   // tone mapping happens in our final pass
+document.body.appendChild(renderer.domElement);
+
+let dprCap = QUALITY[params.quality].dpr;
+const pixelRatio = () => Math.min(window.devicePixelRatio || 1, dprCap, 2);
+renderer.setPixelRatio(pixelRatio());
+renderer.setSize(window.innerWidth, window.innerHeight);
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.05, 200);
+camera.position.set(0, 1.6, 6);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.06;
+controls.rotateSpeed = 0.55;
+controls.zoomSpeed = 0.7;
+controls.minDistance = 3;
+controls.maxDistance = 40;
+controls.enablePan = false;
+controls.enabled = false; // enabled after the intro
+
+const drawSize = new THREE.Vector2();
+renderer.getDrawingBufferSize(drawSize);
+
+/* ============================================================================
+   3. SHADERS
+   ----------------------------------------------------------------------------
+   FIELD_GLSL is shared by the particle and grid shaders. The functions you
+   most likely want to tweak are helicalFieldLine() and vortexPath().
+   ========================================================================== */
+
+const FIELD_GLSL = /* glsl */`
+#define TAU 6.28318530718
+#define PI  3.14159265359
+
+uniform float uR;          // major radius
+uniform float uMinorR;     // minor radius of the outermost shell
+uniform float uKappa;      // inner-side acceleration (0 = uniform speed, <1)
+uniform float uPulseAge;   // seconds since the last pulse (large = none)
+uniform float uPulseOrigin;// toroidal angle where the pulse started
+
+// Point on a torus: phi = toroidal angle (around the big ring, Y is the axis),
+// theta = poloidal angle (around the tube, theta = PI is the inner side).
+vec3 torusPoint(float phi, float theta, float a) {
+  float rho = uR + a * cos(theta);
+  return vec3(rho * cos(phi), a * sin(theta), rho * sin(phi));
+}
+
+// ---------------------------------------------------------------------------
+// FIELD LINE MATH — helical line on a torus shell
+//   w     : position along the line, in toroidal radians
+//   alpha : field-line label (which line on the surface)
+//   a     : shell minor radius
+//   q     : twist ratio / winding number (poloidal turns per toroidal turn)
+// Every point satisfies theta = alpha + q * phi exactly, so rational q gives
+// closed (p,m) torus knots and irrational q never closes and fills the surface.
+// The warp (kappa) reparametrises motion along the line so particles
+// accelerate on the inner side of the tube, near the central axis, and slow
+// on the outside. That's roughly conservation of angular momentum.
+// ---------------------------------------------------------------------------
+vec3 helicalFieldLine(float w, float alpha, float a, float q, out float theta, out float phi) {
+  float thLin = alpha + q * w;
+  theta = thLin - uKappa * sin(thLin);        // fast through theta = PI (inner side)
+  phi   = w - (uKappa / q) * sin(thLin);      // keeps theta = alpha + q*phi
+  return torusPoint(phi, theta, a);
+}
+
+// ---------------------------------------------------------------------------
+// VORTEX PATH — closed meridional loop wrapped around the torus
+//   u    : loop parameter (advances with time; sign sets direction)
+//   k    : loop size 0..1 (small loops pass through the tube, big ones arc wide)
+//   col  : column radius 0..1 (how close to the axis it passes)
+//   phi0 : starting toroidal angle
+// Decreasing u: rises up the central column, fountains out the top, falls
+// down the outside, and is drawn back in underneath. Increasing u reverses it.
+// ---------------------------------------------------------------------------
+uniform float uVortexSpin;
+vec3 vortexPath(float u, float k, float col, float phi0, out float rho, out float psi) {
+  psi = u - 0.65 * sin(u);                    // fast on the inner (axis) side
+  float rhoIn  = uR * (0.025 + 0.10 * col * col);
+  float rhoOut = uR + uMinorR * (0.5 + 1.3 * k);
+  float B      = (uMinorR + 0.6) * (0.7 + 0.85 * k);
+  float rc = 0.5 * (rhoIn + rhoOut);
+  float A  = 0.5 * (rhoOut - rhoIn);
+  rho = rc + A * cos(psi);
+  float s = sin(psi);
+  float axial = 1.0 - smoothstep(rhoIn, rc, rho);   // 1 inside the central column
+  float jet = s > 0.0 ? 0.75 : 0.25;                   // tall plume on top, short intake below
+  float y = B * s * (1.0 + jet * axial);
+  // swirl: angular velocity peaks in the column (u = PI)
+  float phi = phi0 + uVortexSpin + 0.5 * u - 0.35 * sin(u);
+  return vec3(rho * cos(phi), y, rho * sin(phi));
+}
+
+// ---------------------------------------------------------------------------
+// SPECTRUM — the 7 main colours laid around the ring by azimuth.
+// Mostly solid bands with soft edges; slowly rotates (uSpecRot).
+// ---------------------------------------------------------------------------
+uniform vec3  uSpec[7];      // red, orange, yellow, green, blue, indigo, violet
+uniform float uSpecRot;      // band rotation (turns)
+uniform float uSpecMix;      // 0 = gradient palette, 1 = 7-colour spectrum
+vec3 spectrumAt(float az) {
+  float f = fract(az / TAU + uSpecRot) * 7.0;
+  float i = floor(f);
+  float t = smoothstep(0.62, 1.0, f - i);
+  return mix(uSpec[int(i)], uSpec[int(mod(i + 1.0, 7.0))], t);
+}
+
+// Brightness wave that travels along the flow direction.
+float pulseWave(float ang) {
+  if (uPulseAge > 7.0) return 0.0;
+  float front = uPulseAge * 2.2;
+  float d = mod(ang - uPulseOrigin - front + PI, TAU) - PI;
+  float env = exp(-uPulseAge * 0.5) * smoothstep(0.0, 0.2, uPulseAge);
+  return env * exp(-d * d * 5.0);
+}
+`;
+
+/* -------------------- particle streak shader (instanced) ------------------ */
+
+const PARTICLE_VERT = /* glsl */`
+${FIELD_GLSL}
+
+uniform float uTime;
+uniform float uShellPhase[5];
+uniform float uShellRate[5];
+uniform float uShellCount;
+uniform float uQ;
+uniform float uShear;
+uniform float uLineCount;
+uniform float uSpanW;
+uniform float uVortexPhase;
+uniform float uVortexRate;
+uniform float uVortexDir;
+uniform float uVortexMix;
+uniform float uTrail;
+uniform float uIntro;
+uniform vec3  uMouseO;
+uniform vec3  uMouseD;
+uniform float uMouseStrength;
+uniform vec2  uRes;
+uniform float uSize;
+uniform float uBrightness;
+uniform float uCamDist;
+uniform vec3  uPal0, uPal1, uPal2, uPal3;
+
+attribute vec4 aSeed;   // x: population, y: shell / column, z: line / phi0, w: position along path
+attribute vec4 aSeed2;  // x,y: filament jitter, z: fill flag / loop size, w: size + intro delay
+
+varying vec2  vLocal;   // fragment position in streak space (pixels)
+varying float vHalfLen;
+varying float vRadius;
+varying vec3  vColor;
+varying float vAlpha;
+
+const float VORTEX_FRACTION = ${VORTEX_FRACTION.toFixed(3)};
+const float FILL_FRACTION   = 0.28;
+const float MAX_STREAK_PX   = 140.0;
+const float MAX_RADIUS_PX   = 22.0;
+const float GAIN            = 0.035;  // global particle exposure
+
+vec3 palette(float t) {
+  t = clamp(t, 0.0, 1.0) * 3.0;
+  vec3 c = mix(uPal0, uPal1, clamp(t, 0.0, 1.0));
+  c = mix(c, uPal2, clamp(t - 1.0, 0.0, 1.0));
+  return mix(c, uPal3, clamp(t - 2.0, 0.0, 1.0));
+}
+
+// Cheap smooth turbulence, so the flow doesn't look rigid
+vec3 turbulence(vec3 p, float t, float seed) {
+  return 0.5 * vec3(
+    sin(p.y * 1.9 + t * 0.70 + seed * 6.28) + sin(p.z * 1.3 - t * 0.45),
+    sin(p.z * 1.7 + t * 0.60 + seed * 3.10) + sin(p.x * 1.1 + t * 0.35),
+    sin(p.x * 1.5 - t * 0.50 + seed * 4.70) + sin(p.y * 1.2 - t * 0.55));
+}
+
+// Mouse attractor: pull points toward the mouse ray with a Gaussian falloff
+vec3 mouseBend(vec3 p) {
+  vec3 o = p - uMouseO;
+  vec3 c = uMouseO + uMouseD * max(dot(o, uMouseD), 0.0);
+  vec3 off = c - p;
+  float w = exp(-dot(off, off) / 1.6);
+  return p + off * w * uMouseStrength;
+}
+
+void main() {
+  vec3 head, tail;
+  float rho, ang, shellT, fade, gain, sizeMul, axisW, baseW;
+
+  if (aSeed.x < VORTEX_FRACTION) {
+    // ------------------------------ VORTEX --------------------------------
+    float u  = aSeed.w * TAU + uVortexPhase;
+    float uT = u - uTrail * uVortexRate * uVortexDir;
+    float psi, psiT, rhoT;
+    head = vortexPath(u,  aSeed2.z, aSeed.y, aSeed.z * TAU, rho,  psi);
+    tail = vortexPath(uT, aSeed2.z, aSeed.y, aSeed.z * TAU, rhoT, psiT);
+    float amp = 0.04 + 0.16 * aSeed2.z * smoothstep(0.0, 2.0, head.y + 1.0);
+    head += turbulence(head, uTime, aSeed2.w) * amp;
+    tail += turbulence(tail, uTime - uTrail, aSeed2.w) * amp;
+    ang = -uVortexDir * psi;   // pulse runs along the flow
+    shellT = 0.45 + 0.2 * (1.0 - aSeed2.z);
+    fade = uVortexMix;
+    gain = 0.5;
+    sizeMul = 0.85;
+    baseW = 0.95;   // keep the outer return arcs visible
+    axisW = 0.5;    // the column is dense already; keep it from blowing out
+  } else {
+    // --------------------------- SHELL FLOW -------------------------------
+    float n = uShellCount;
+    float shell = min(floor(aSeed.y * n), n - 1.0);
+    int si = int(shell);
+    float sNorm = n < 1.5 ? 1.0 : shell / (n - 1.0);
+    float a = uMinorR * (n < 1.5 ? 1.0 : 0.3 + 0.7 * (shell + 1.0) / n);
+    a *= 1.0 + aSeed2.y * 0.025;
+    float q = max(uQ * (1.0 + uShear * (sNorm - 0.5)), 0.05);
+
+    bool filament = aSeed2.z > FILL_FRACTION;
+    float alpha = filament
+      ? floor(aSeed.z * uLineCount) / uLineCount * TAU + shell * 1.7 + aSeed2.x * 0.035
+      : aSeed.z * TAU;
+
+    // position along the line; wraps over the span, faded at both ends
+    float w  = mod(aSeed.w * uSpanW + uShellPhase[si], uSpanW);
+    fade = smoothstep(0.0, 2.0, w) * smoothstep(uSpanW, uSpanW - 2.0, w);
+    float wc = w - 0.5 * uSpanW;
+    float wT = wc - uTrail * uShellRate[si];
+
+    float thH, phH, thT, phT;
+    head = helicalFieldLine(wc, alpha, a, q, thH, phH);
+    tail = helicalFieldLine(wT, alpha, a, q, thT, phT);
+    head += turbulence(head, uTime, aSeed2.w) * 0.01;
+    tail += turbulence(tail, uTime - uTrail, aSeed2.w) * 0.01;
+
+    rho = uR + a * cos(thH);
+    ang = phH;
+    shellT = n < 1.5 ? 0.45 : 0.18 + 0.42 * (1.0 - sNorm);  // inner shells run hotter
+    gain = filament ? 1.0 : 0.42;
+    sizeMul = 1.0;
+    baseW = 0.4;
+    axisW = 1.7;
+  }
+
+  head = mouseBend(head);
+  tail = mouseBend(tail);
+
+  // ---- intro: bloom out of the centre ----
+  float delay = aSeed2.w * 0.35;
+  float k  = clamp(uIntro * 1.35 - delay, 0.0, 1.0);
+  float kT = clamp((uIntro - 0.035) * 1.35 - delay, 0.0, 1.0);
+  float e  = 1.0 - pow(1.0 - k, 3.0);
+  float eT = 1.0 - pow(1.0 - kT, 3.0);
+  head *= e;
+  tail *= eT;
+
+  // ---- colour & brightness ----
+  float axis = 1.0 - smoothstep(0.0, uR + uMinorR, rho); // 1 at the central axis
+  float ax2 = axis * axis;
+  float pulse = pulseWave(ang);
+  vec3 colGrad = palette(shellT + 0.5 * ax2 + 0.35 * pulse);
+  // spectrum colour from the particle's azimuth: 7 bands around the ring.
+  // The vortex column gathers every azimuth, so the colours sum to white there.
+  vec3 colSpec = spectrumAt(atan(head.z, head.x));
+  colSpec = mix(colSpec, vec3(1.0), clamp(0.15 * ax2 + 0.45 * pulse, 0.0, 1.0));
+  vec3 col = mix(colGrad, colSpec, uSpecMix);
+  float intensity = GAIN * uBrightness * gain * fade
+                  * (baseW + axisW * ax2)          // brighter near the axis
+                  * (1.0 + 2.6 * pulse)
+                  * (0.82 + 0.18 * sin(uTime * 6.0 + aSeed2.w * 80.0))
+                  * (1.0 + 2.0 * (1.0 - e) * k)    // intro flash
+                  * smoothstep(0.0, 0.2, k);
+
+  // ---- projection & streak quad ----
+  vec4 vH = modelViewMatrix * vec4(head, 1.0);
+  vec4 vT = modelViewMatrix * vec4(tail, 1.0);
+  if (vH.z > -0.06 || intensity < 1e-4) {        // behind camera or invisible: cull
+    gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+    vAlpha = 0.0; vLocal = vec2(0.0); vHalfLen = 0.0; vRadius = 1.0; vColor = vec3(0.0);
+    return;
+  }
+  if (vT.z > -0.06) vT = vH;
+  // atmospheric depth falloff
+  intensity *= mix(1.0, 0.5, smoothstep(uCamDist - 3.0, uCamDist + 7.0, -vH.z));
+
+  vec4 cH = projectionMatrix * vH;
+  vec4 cT = projectionMatrix * vT;
+  vec2 sH = cH.xy / cH.w * 0.5 * uRes;
+  vec2 sT = cT.xy / cT.w * 0.5 * uRes;
+  vec2 d = sH - sT;
+  float len = length(d);
+  vec2 dir = len > 1e-3 ? d / len : vec2(1.0, 0.0);
+  if (len > MAX_STREAK_PX) { len = MAX_STREAK_PX; sT = sH - dir * len; }
+  vec2 perp = vec2(-dir.y, dir.x);
+
+  // size scales with depth (projectionMatrix[1][1] = 1 / tan(fov/2))
+  float radius = uSize * sizeMul * projectionMatrix[1][1] * 0.5 * uRes.y / -vH.z
+               * mix(0.6, 1.4, aSeed2.w) * (1.0 + 0.5 * pulse);
+  float energy = 1.0;
+  if (radius < 1.0) { energy = radius * radius; radius = 1.0; } // no sub-pixel shimmer
+  radius = min(radius, MAX_RADIUS_PX);
+
+  float along = position.x * 0.5 + 0.5;            // 0 = tail, 1 = head
+  vec2 sp = mix(sT, sH, along) + dir * position.x * radius + perp * position.y * radius;
+  float z = mix(cT.z / cT.w, cH.z / cH.w, along);
+  gl_Position = vec4(sp / (0.5 * uRes), clamp(z, -0.999, 0.999), 1.0);
+
+  vLocal   = vec2(position.x * (0.5 * len + radius), position.y * radius);
+  vHalfLen = 0.5 * len;
+  vRadius  = radius;
+  vColor   = col;
+  vAlpha   = intensity * energy;
+}
+`;
+
+const PARTICLE_FRAG = /* glsl */`
+uniform sampler2D uSprite;
+varying vec2  vLocal;
+varying float vHalfLen;
+varying float vRadius;
+varying vec3  vColor;
+varying float vAlpha;
+
+void main() {
+  // capsule distance: 0 on the streak's spine, 1 at its soft edge
+  float dx = max(abs(vLocal.x) - vHalfLen, 0.0);
+  float d = length(vec2(dx, vLocal.y)) / vRadius;
+  if (d >= 1.0 || vAlpha <= 0.0) discard;
+  float prof = texture2D(uSprite, vec2(0.5 + 0.5 * d, 0.5)).r;   // procedural sprite profile
+  // trail fades from the head back to the tail
+  float along = clamp((vLocal.x + vHalfLen) / max(2.0 * vHalfLen, 1e-3), 0.0, 1.0);
+  float trail = mix(1.0, mix(0.06, 1.0, pow(along, 1.7)), smoothstep(0.5, 3.0, vHalfLen));
+  gl_FragColor = vec4(vColor * prof * trail * vAlpha, 1.0);
+}
+`;
+
+/* ---------------------------- guide grid shader --------------------------- */
+
+const GRID_VERT = /* glsl */`
+${FIELD_GLSL}
+uniform float uTime;
+varying float vGlow;
+varying float vDepth;
+varying vec3 vSpec;
+void main() {
+  float phi = position.x, th = position.y;
+  vSpec = spectrumAt(phi);
+  vec3 p = torusPoint(phi, th, uMinorR * position.z);
+  float ds = mod(phi - uTime * 0.35 + PI, TAU) - PI;    // scanning band
+  vGlow = 0.3 + 1.1 * exp(-ds * ds * 9.0) + 2.5 * pulseWave(phi);
+  vec4 mv = modelViewMatrix * vec4(p, 1.0);
+  vDepth = -mv.z;
+  gl_Position = projectionMatrix * mv;
+}
+`;
+const GRID_FRAG = /* glsl */`
+uniform vec3 uColor;
+uniform float uOpacity;
+uniform float uCamDist;
+uniform float uSpecMix;
+varying vec3 vSpec;
+varying float vGlow;
+varying float vDepth;
+void main() {
+  float near = smoothstep(uCamDist + 6.0, uCamDist - 4.0, vDepth);   // back side dimmer
+  vec3 c = mix(uColor, vSpec, uSpecMix * 0.85);
+  gl_FragColor = vec4(c * vGlow * uOpacity * (0.3 + 0.7 * near), 1.0);
+}
+`;
+
+/* -------------------------- projector plate shader ------------------------ */
+
+const PLATE_VERT = /* glsl */`
+uniform float uRot, uScale, uY;
+varying float vR;
+void main() {
+  float c = cos(uRot), s = sin(uRot);
+  vec2 xz = mat2(c, -s, s, c) * position.xz;
+  vR = length(position.xz);
+  vec3 p = vec3(xz.x * uScale, uY + position.y * uScale, xz.y * uScale);
+  gl_Position = projectionMatrix * modelViewMatrix * vec4(p, 1.0);
+}
+`;
+const PLATE_FRAG = /* glsl */`
+uniform vec3 uColor;
+uniform float uOpacity;
+varying float vR;
+void main() {
+  gl_FragColor = vec4(uColor * uOpacity * (1.0 - 0.45 * smoothstep(0.5, 2.0, vR)), 1.0);
+}
+`;
+
+/* -------------------------------- dust shader ----------------------------- */
+
+const DUST_VERT = /* glsl */`
+uniform float uTime;
+uniform float uScale;   // pixels per world unit at distance 1
+attribute float aSeed;
+varying float vAlpha;
+void main() {
+  vec3 p = position + vec3(sin(uTime * 0.05 + aSeed * 40.0) * 0.8,
+                           uTime * (0.03 + 0.05 * aSeed),
+                           cos(uTime * 0.04 + aSeed * 23.0) * 0.8);
+  p = mod(p + 22.0, 44.0) - 22.0;                     // wrap inside a 44-unit box
+  vec4 mv = modelViewMatrix * vec4(p, 1.0);
+  float size = (0.02 + 0.05 * fract(aSeed * 13.7)) * uScale / max(-mv.z, 0.1);
+  gl_PointSize = clamp(size, 1.0, 48.0);
+  // close dust becomes big, faint bokeh; far dust becomes pin-pricks
+  vAlpha = (0.10 + 0.25 * fract(aSeed * 7.3)) / (1.0 + size * 0.08)
+         * (0.6 + 0.4 * sin(uTime * (0.6 + aSeed) + aSeed * 50.0));
+  vAlpha *= smoothstep(0.3, 2.0, -mv.z);
+  gl_Position = projectionMatrix * mv;
+}
+`;
+const DUST_FRAG = /* glsl */`
+uniform sampler2D uSprite;
+uniform vec3 uColor;
+uniform float uIntro;
+varying float vAlpha;
+void main() {
+  float prof = texture2D(uSprite, gl_PointCoord).r;
+  gl_FragColor = vec4(uColor * prof * vAlpha * uIntro, 1.0);
+}
+`;
+
+/* ------------------------- background haze shader ------------------------- */
+
+const HAZE_VERT = /* glsl */`
+varying vec2 vUv;
+void main() { vUv = uv; gl_Position = vec4(position.xy, 0.9999, 1.0); }
+`;
+const HAZE_FRAG = /* glsl */`
+uniform vec2 uRes;
+uniform vec2 uCenter;   // NDC of the torus centre
+uniform float uTime;
+uniform float uAz;      // camera azimuth, for parallax
+uniform float uIntro;
+uniform vec3 uBg, uPal0, uPal1;
+varying vec2 vUv;
+
+float hash(vec2 p) { vec3 p3 = fract(vec3(p.xyx) * 0.1031); p3 += dot(p3, p3.yzx + 33.33); return fract((p3.x + p3.y) * p3.z); }
+float noise(vec2 p) {
+  vec2 i = floor(p), f = fract(p);
+  vec2 u = f * f * (3.0 - 2.0 * f);
+  return mix(mix(hash(i), hash(i + vec2(1, 0)), u.x), mix(hash(i + vec2(0, 1)), hash(i + vec2(1, 1)), u.x), u.y);
+}
+float fbm(vec2 p) { float v = 0.0, a = 0.5; for (int i = 0; i < 5; i++) { v += a * noise(p); p *= 2.03; a *= 0.5; } return v; }
+
+void main() {
+  float aspect = uRes.x / uRes.y;
+  vec2 p = (vUv - 0.5) * vec2(aspect, 1.0);
+  vec2 c = uCenter * 0.5 * vec2(aspect, 1.0);
+  float d = length(p - c);
+  float n  = fbm(p * 2.0 + vec2(uAz * 0.6, 0.0) + vec2(uTime * 0.010, -uTime * 0.006));
+  float n2 = fbm(p * 4.5 - vec2(uAz * 1.1, 0.0) + uTime * 0.015);
+  vec3 haze = mix(uPal0, uPal1, n2 * 0.5) * pow(n, 2.2) * 0.045;
+  float glow = exp(-d * d * 4.0) * 0.028 + exp(-d * d * 30.0) * 0.018;
+  vec3 col = uBg + (haze * (0.6 + 0.8 * exp(-d * d * 1.5)) + uPal1 * glow) * uIntro;
+  gl_FragColor = vec4(col, 1.0);
+}
+`;
+
+/* -------------------------- final composite shader ------------------------ */
+
+const FinalShader = {
+  uniforms: {
+    tDiffuse: { value: null },
+    uRes: { value: new THREE.Vector2(1, 1) },
+    uTime: { value: 0 },
+    uExposure: { value: 1 },
+    uGrain: { value: params.grain },
+    uVignette: { value: params.vignette },
+    uCA: { value: params.aberration },
+  },
+  vertexShader: /* glsl */`
+    varying vec2 vUv;
+    void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }
+  `,
+  fragmentShader: /* glsl */`
+    uniform sampler2D tDiffuse;
+    uniform vec2 uRes;
+    uniform float uTime, uExposure, uGrain, uVignette, uCA;
+    varying vec2 vUv;
+
+    vec3 aces(vec3 x) { return clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), 0.0, 1.0); }
+    vec3 toSRGB(vec3 c) { return mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(0.0031308, c)); }
+    float hash12(vec2 p) { vec3 p3 = fract(vec3(p.xyx) * 0.1031); p3 += dot(p3, p3.yzx + 33.33); return fract((p3.x + p3.y) * p3.z); }
+
+    void main() {
+      vec2 c = vUv - 0.5;
+      // radial chromatic aberration (stronger toward the edges)
+      vec2 off = c * dot(c, c) * uCA * 4.0;
+      vec3 col = vec3(texture2D(tDiffuse, vUv - off).r,
+                      texture2D(tDiffuse, vUv).g,
+                      texture2D(tDiffuse, vUv + off).b);
+      col = aces(col * uExposure);
+      // vignette
+      float v = smoothstep(0.95, 0.25, length(c * vec2(uRes.x / uRes.y, 1.0) * 0.82));
+      col *= mix(1.0, v, uVignette);
+      col = toSRGB(col);
+      // film grain at 24 fps, stronger in the shadows (also hides banding)
+      float g = hash12(gl_FragCoord.xy + floor(uTime * 24.0) * vec2(37.0, 17.0)) - 0.5;
+      col += g * uGrain * (1.0 - 0.6 * col);
+      gl_FragColor = vec4(col, 1.0);
+    }
+  `,
+};
+
+/* ============================================================================
+   4. PARTICLE FIELD (GPU instanced streaks)
+   ----------------------------------------------------------------------------
+   One quad per particle. All motion is evaluated in PARTICLE_VERT from static
+   random seeds plus a handful of uniforms. The CPU never touches a particle.
+   ========================================================================== */
+
+// Procedural soft sprite drawn on a canvas (no external assets)
+function makeSprite() {
+  const s = 128, cv = document.createElement('canvas');
+  cv.width = cv.height = s;
+  const g = cv.getContext('2d');
+  const grd = g.createRadialGradient(s / 2, s / 2, 0, s / 2, s / 2, s / 2);
+  grd.addColorStop(0.00, 'rgba(255,255,255,1)');
+  grd.addColorStop(0.12, 'rgba(255,255,255,0.85)');
+  grd.addColorStop(0.30, 'rgba(255,255,255,0.38)');
+  grd.addColorStop(0.55, 'rgba(255,255,255,0.12)');
+  grd.addColorStop(0.80, 'rgba(255,255,255,0.03)');
+  grd.addColorStop(1.00, 'rgba(255,255,255,0)');
+  g.fillStyle = '#000'; g.fillRect(0, 0, s, s);
+  g.fillStyle = grd; g.fillRect(0, 0, s, s);
+  const tex = new THREE.CanvasTexture(cv);
+  tex.minFilter = THREE.LinearFilter;
+  tex.magFilter = THREE.LinearFilter;
+  tex.generateMipmaps = false;
+  return tex;
+}
+const sprite = makeSprite();
+
+// Live palette (lerps toward the target palette for smooth switching)
+const pal = [new THREE.Color(), new THREE.Color(), new THREE.Color(), new THREE.Color()];
+let palTarget = PALETTES[params.palette].map(h => new THREE.Color(h));
+pal.forEach((c, i) => c.copy(palTarget[i]));
+
+// Spectrum colours, partially luminance-balanced so yellow doesn't swamp indigo
+const spectrum = SPECTRUM_7.map(h => {
+  const c = new THREE.Color(h);
+  const lum = 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b;
+  return c.multiplyScalar(Math.pow(0.3 / lum, 0.35));
+});
+let specMix = params.palette === 'Spectrum' ? 1 : 0;
+
+const particleUniforms = {
+  uTime: { value: 0 },
+  uShellPhase: { value: [0, 0, 0, 0, 0] },
+  uShellRate: { value: [1, 1, 1, 1, 1] },
+  uShellCount: { value: params.shells },
+  uQ: { value: params.twist },
+  uShear: { value: params.shear },
+  uLineCount: { value: params.lineCount },
+  uSpanW: { value: SPAN_W },
+  uR: { value: params.R },
+  uMinorR: { value: params.r },
+  uKappa: { value: params.axisBoost },
+  uVortexPhase: { value: 0 },
+  uVortexRate: { value: 1 },
+  uVortexDir: { value: -1 },
+  uVortexSpin: { value: 0 },
+  uVortexMix: { value: 1 },
+  uTrail: { value: params.trail },
+  uIntro: { value: 0 },
+  uPulseAge: { value: 99 },
+  uPulseOrigin: { value: 0 },
+  uMouseO: { value: new THREE.Vector3() },
+  uMouseD: { value: new THREE.Vector3(0, 0, -1) },
+  uMouseStrength: { value: 0 },
+  uRes: { value: drawSize.clone() },
+  uSize: { value: params.size },
+  uBrightness: { value: 1 },
+  uCamDist: { value: 12 },
+  uPal0: { value: pal[0] }, uPal1: { value: pal[1] }, uPal2: { value: pal[2] }, uPal3: { value: pal[3] },
+  uSpec: { value: spectrum },
+  uSpecMix: { value: specMix },
+  uSpecRot: { value: 0 },
+  uSprite: { value: sprite },
+};
+
+function buildParticles() {
+  const geo = new THREE.InstancedBufferGeometry();
+  // unit quad: x runs tail(-1) → head(+1), y across the streak
+  geo.setAttribute('position', new THREE.Float32BufferAttribute([-1, -1, 0, 1, -1, 0, 1, 1, 0, -1, 1, 0], 3));
+  geo.setIndex([0, 1, 2, 0, 2, 3]);
+  const s1 = new Float32Array(MAX_PARTICLES * 4);
+  const s2 = new Float32Array(MAX_PARTICLES * 4);
+  for (let i = 0; i < MAX_PARTICLES * 4; i += 4) {
+    s1[i] = Math.random(); s1[i + 1] = Math.random(); s1[i + 2] = Math.random(); s1[i + 3] = Math.random();
+    s2[i] = Math.random() * 2 - 1; s2[i + 1] = Math.random() * 2 - 1; s2[i + 2] = Math.random(); s2[i + 3] = Math.random();
+  }
+  geo.setAttribute('aSeed', new THREE.InstancedBufferAttribute(s1, 4));
+  geo.setAttribute('aSeed2', new THREE.InstancedBufferAttribute(s2, 4));
+  geo.instanceCount = params.particles;
+
+  const mat = new THREE.ShaderMaterial({
+    uniforms: particleUniforms,
+    vertexShader: PARTICLE_VERT,
+    fragmentShader: PARTICLE_FRAG,
+    blending: THREE.AdditiveBlending,
+    depthTest: false,
+    depthWrite: false,
+    transparent: true,
+  });
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.frustumCulled = false;
+  mesh.renderOrder = 2;
+  return mesh;
+}
+const particles = buildParticles();
+scene.add(particles);
+
+function setParticleCount(n) {
+  params.particles = Math.round(THREE.MathUtils.clamp(n, 10000, MAX_PARTICLES));
+  particles.geometry.instanceCount = params.particles;
+}
+
+/* ============================================================================
+   5. GUIDE GRID, PROJECTOR PLATE, DUST, HAZE
+   ========================================================================== */
+
+// --- guide grid: meridians + parallels in (phi, theta) space; shaped in the shader
+function buildGrid() {
+  const pts = [];
+  const M = 36, MS = 40, P = 12, PS = 144, SHELL = 1.06;
+  for (let i = 0; i < M; i++) {
+    const phi = (i / M) * TAU;
+    for (let j = 0; j < MS; j++) pts.push(phi, (j / MS) * TAU, SHELL, phi, ((j + 1) / MS) * TAU, SHELL);
+  }
+  for (let j = 0; j < P; j++) {
+    const th = (j / P) * TAU;
+    for (let i = 0; i < PS; i++) pts.push((i / PS) * TAU, th, SHELL, ((i + 1) / PS) * TAU, th, SHELL);
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pts, 3));
+  const mat = new THREE.ShaderMaterial({
+    uniforms: {
+      uR: particleUniforms.uR, uMinorR: particleUniforms.uMinorR, uKappa: particleUniforms.uKappa,
+      uPulseAge: particleUniforms.uPulseAge, uPulseOrigin: particleUniforms.uPulseOrigin,
+      uVortexSpin: particleUniforms.uVortexSpin,
+      uSpec: particleUniforms.uSpec, uSpecRot: particleUniforms.uSpecRot, uSpecMix: particleUniforms.uSpecMix,
+      uTime: { value: 0 }, uOpacity: { value: 0 }, uColor: { value: pal[1] }, uCamDist: particleUniforms.uCamDist,
+    },
+    vertexShader: GRID_VERT, fragmentShader: GRID_FRAG,
+    blending: THREE.AdditiveBlending, depthTest: false, depthWrite: false, transparent: true,
+  });
+  const lines = new THREE.LineSegments(geo, mat);
+  lines.frustumCulled = false;
+  lines.renderOrder = 1;
+  return lines;
+}
+const grid = buildGrid();
+scene.add(grid);
+
+// --- holographic projector plate beneath the field: rings, ticks, axis
+function buildPlate() {
+  const pts = [];
+  const circle = (rad, seg, dash = 0) => {
+    for (let i = 0; i < seg; i++) {
+      if (dash && i % dash === 0) continue;
+      const a0 = (i / seg) * TAU, a1 = ((i + 1) / seg) * TAU;
+      pts.push(Math.cos(a0) * rad, 0, Math.sin(a0) * rad, Math.cos(a1) * rad, 0, Math.sin(a1) * rad);
+    }
+  };
+  [0.35, 0.8, 1.25, 1.62, 1.7].forEach((r, i) => circle(r, 160, i === 2 ? 4 : 0));
+  for (let d = 0; d < 360; d += 5) {             // tick marks
+    const a = (d / 360) * TAU, l = d % 30 === 0 ? 0.12 : 0.05;
+    pts.push(Math.cos(a) * 1.62, 0, Math.sin(a) * 1.62, Math.cos(a) * (1.62 - l), 0, Math.sin(a) * (1.62 - l));
+  }
+  for (let y = 0; y < 2.6; y += 0.12) pts.push(0, y, 0, 0, y + 0.06, 0);   // dashed central axis
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pts, 3));
+  const mat = new THREE.ShaderMaterial({
+    uniforms: { uRot: { value: 0 }, uScale: { value: 3 }, uY: { value: -4 }, uOpacity: { value: 0 }, uColor: { value: pal[1] } },
+    vertexShader: PLATE_VERT, fragmentShader: PLATE_FRAG,
+    blending: THREE.AdditiveBlending, depthTest: false, depthWrite: false, transparent: true,
+  });
+  const lines = new THREE.LineSegments(geo, mat);
+  lines.frustumCulled = false;
+  lines.renderOrder = 1;
+  return lines;
+}
+const plate = buildPlate();
+scene.add(plate);
+
+// --- drifting dust motes for depth
+function buildDust(n = 1400) {
+  const pos = new Float32Array(n * 3), seed = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    pos[i * 3] = (Math.random() - 0.5) * 44;
+    pos[i * 3 + 1] = (Math.random() - 0.5) * 44;
+    pos[i * 3 + 2] = (Math.random() - 0.5) * 44;
+    seed[i] = Math.random();
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  geo.setAttribute('aSeed', new THREE.BufferAttribute(seed, 1));
+  const mat = new THREE.ShaderMaterial({
+    uniforms: { uTime: { value: 0 }, uScale: { value: 500 }, uSprite: { value: sprite }, uColor: { value: pal[1] }, uIntro: particleUniforms.uIntro },
+    vertexShader: DUST_VERT, fragmentShader: DUST_FRAG,
+    blending: THREE.AdditiveBlending, depthTest: false, depthWrite: false, transparent: true,
+  });
+  const pts = new THREE.Points(geo, mat);
+  pts.frustumCulled = false;
+  pts.renderOrder = 3;
+  return pts;
+}
+const dust = buildDust();
+scene.add(dust);
+
+// --- full-screen background haze (drawn first)
+const haze = new THREE.Mesh(
+  new THREE.PlaneGeometry(2, 2),
+  new THREE.ShaderMaterial({
+    uniforms: {
+      uRes: { value: drawSize.clone() }, uCenter: { value: new THREE.Vector2() }, uTime: { value: 0 },
+      uAz: { value: 0 }, uIntro: { value: 0 }, uBg: { value: BG }, uPal0: { value: pal[0] }, uPal1: { value: pal[1] },
+    },
+    vertexShader: HAZE_VERT, fragmentShader: HAZE_FRAG,
+    depthTest: false, depthWrite: false, blending: THREE.NoBlending,
+  })
+);
+haze.frustumCulled = false;
+haze.renderOrder = -10;
+scene.add(haze);
+
+/* ============================================================================
+   6. POST-PROCESSING
+   ----------------------------------------------------------------------------
+   RenderPass (HDR, half-float) → UnrealBloom → Final (CA, ACES, vignette,
+   sRGB, grain).
+   ========================================================================== */
+
+const composer = new EffectComposer(renderer);   // half-float targets = HDR headroom
+composer.setPixelRatio(pixelRatio());
+composer.setSize(window.innerWidth, window.innerHeight);
+composer.addPass(new RenderPass(scene, camera));
+const bloom = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight),
+  params.bloomStrength, params.bloomRadius, params.bloomThreshold);
+composer.addPass(bloom);
+const finalPass = new ShaderPass(FinalShader);
+composer.addPass(finalPass);
+
+function onResize() {
+  const w = window.innerWidth, h = window.innerHeight;
+  camera.aspect = w / h;
+  camera.updateProjectionMatrix();
+  renderer.setPixelRatio(pixelRatio());
+  renderer.setSize(w, h);
+  composer.setPixelRatio(pixelRatio());
+  composer.setSize(w, h);
+  renderer.getDrawingBufferSize(drawSize);
+  particleUniforms.uRes.value.copy(drawSize);
+  haze.material.uniforms.uRes.value.copy(drawSize);
+  finalPass.uniforms.uRes.value.copy(drawSize);
+  dust.material.uniforms.uScale.value = drawSize.y * 0.5 / Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2);
+}
+window.addEventListener('resize', onResize);
+onResize();
+
+/* ============================================================================
+   7. HUD
+   ========================================================================== */
+
+const $ = id => document.getElementById(id);
+const hudEl = $('hud'), bootEl = $('boot');
+const spark = $('spark').getContext('2d');
+const sparkHist = new Array(90).fill(0.4);
+
+// Best small-denominator rational approximation of q (for the topology readout)
+function rationalOf(q, maxDen = 12, tol = 0.0015) {
+  for (let d = 1; d <= maxDen; d++) {
+    const n = Math.round(q * d);
+    if (n > 0 && Math.abs(q - n / d) < tol) return [n, d];
+  }
+  return null;
+}
+const hex = n => Math.floor(Math.random() * 16 ** n).toString(16).toUpperCase().padStart(n, '0');
+const pad = (v, n = 2) => String(v).padStart(n, '0');
+
+function setHudAccent() {
+  const c = pal[1].clone().lerp(new THREE.Color(1, 1, 1), 0.35);
+  const [r, g, b] = [c.r, c.g, c.b].map(v => Math.round(THREE.MathUtils.clamp(Math.pow(v, 1 / 2.2), 0, 1) * 255));
+  const root = document.documentElement.style;
+  root.setProperty('--hud', `rgba(${r},${g},${b},0.8)`);
+  root.setProperty('--hud-dim', `rgba(${r},${g},${b},0.4)`);
+  root.setProperty('--hud-line', `rgba(${r},${g},${b},0.2)`);
+}
+
+let hudTimer = 0, fpsFrames = 0, fpsTime = 0, fps = 60;
+function updateHUD(dtReal, realTime, pulseLevel) {
+  fpsFrames++; fpsTime += dtReal;
+  if (fpsTime >= 0.5) { fps = fpsFrames / fpsTime; fpsFrames = 0; fpsTime = 0; }
+  hudTimer += dtReal;
+  if (hudTimer < 0.1 || !hudEl.classList.contains('on')) return;
+  hudTimer = 0;
+
+  const sph = new THREE.Spherical().setFromVector3(camera.position.clone().sub(controls.target));
+  $('hud-az').textContent =
+    `AZ ${pad(((THREE.MathUtils.radToDeg(sph.theta) % 360 + 360) % 360).toFixed(1), 5)}°  ·  EL ${(90 - THREE.MathUtils.radToDeg(sph.phi)).toFixed(1)}°  ·  FOV ${camera.fov.toFixed(1)}`;
+  $('tape').style.backgroundPosition = `${(-sph.theta * 180).toFixed(1)}px bottom, ${(-sph.theta * 180).toFixed(1)}px bottom`;
+
+  const f = Math.floor(realTime * 24);
+  $('hud-tc').textContent = `${pad(Math.floor(f / 86400))}:${pad(Math.floor(f / 1440) % 60)}:${pad(Math.floor(f / 24) % 60)}:${pad(f % 24)}`;
+  $('hud-fps').textContent = fps.toFixed(0);
+  $('hud-count').textContent = params.particles.toLocaleString('en-US');
+  $('hud-res').textContent = `${drawSize.x}×${drawSize.y}`;
+  $('hud-q').textContent = params.quality;
+  $('hud-pal').textContent = params.palette.toUpperCase();
+
+  const rat = rationalOf(params.twist);
+  $('hud-twist').textContent = params.twist.toFixed(4);
+  $('hud-topo').textContent = rat ? `RESONANT ${rat[0]}:${rat[1]} · CLOSED KNOT` : 'IRRATIONAL · ERGODIC';
+
+  const B = params.flowSpeed * 2.1 * (params.R / params.r) * 0.4 * (1 + pulseLevel * 0.8) * (0.98 + Math.random() * 0.04);
+  $('hud-field').textContent = `${B.toFixed(3)} T`;
+  $('hud-field-bar').style.width = `${Math.min(100, B / 6 * 100).toFixed(1)}%`;
+  $('hud-geom').textContent = `${params.R.toFixed(2)} / ${params.r.toFixed(2)} / ${params.shells}`;
+
+  const flux = B * Math.PI * params.r * params.r;
+  $('tl-flux').textContent = `${flux.toFixed(3)} Wb`;
+  $('tl-temp').textContent = `${(1.2 + B * 0.18 + Math.random() * 0.02).toFixed(3)}e8 K`;
+  $('tl-beta').textContent = (0.031 + Math.random() * 0.004 + pulseLevel * 0.01).toFixed(4);
+  $('tl-sync').textContent = `0x${hex(4)}·${hex(4)}`;
+
+  sparkHist.push(Math.min(1, B / 6 + (Math.random() - 0.5) * 0.04));
+  sparkHist.shift();
+  const W = 270, H = 34;
+  spark.clearRect(0, 0, W, H);
+  spark.strokeStyle = getComputedStyle(document.documentElement).getPropertyValue('--hud-line');
+  spark.beginPath(); spark.moveTo(0, H - 0.5); spark.lineTo(W, H - 0.5); spark.stroke();
+  spark.strokeStyle = getComputedStyle(document.documentElement).getPropertyValue('--hud');
+  spark.lineWidth = 1;
+  spark.beginPath();
+  sparkHist.forEach((v, i) => { const x = (i / (sparkHist.length - 1)) * W, y = H - 2 - v * (H - 6); i ? spark.lineTo(x, y) : spark.moveTo(x, y); });
+  spark.stroke();
+}
+
+/* ============================================================================
+   8. UI (lil-gui) & KEYBOARD
+   ========================================================================== */
+
+let paused = false, uiHidden = false;
+let targetTimeScale = 1;
+let pulseAge = 99, sinceAutoPulse = 0;
+
+function triggerPulse() {
+  pulseAge = 0;
+  sinceAutoPulse = 0;
+  particleUniforms.uPulseOrigin.value = Math.random() * TAU;
+}
+function setPaused(p) {
+  paused = p;
+  targetTimeScale = p ? 0 : 1;
+  $('hud-flow').textContent = p ? '❚❚ FIELD FROZEN' : '▶ FLOW ACTIVE';
+}
+function setPalette(name) {
+  params.palette = name;
+  palTarget = PALETTES[name].map(h => new THREE.Color(h));
+  refreshGui();
+}
+function setQuality(name) {
+  params.quality = name;
+  dprCap = QUALITY[name].dpr;
+  setParticleCount(QUALITY[name].particles);
+  onResize();
+  refreshGui();
+}
+function applyUiVisibility() {
+  hudEl.style.display = (params.hud && !uiHidden) ? '' : 'none';
+  gui.domElement.style.display = uiHidden ? 'none' : '';
+  document.body.classList.toggle('ui-hidden', uiHidden);
+}
+
+// Restore every setting to DEFAULTS. Geometry eases back, and the camera glides home
+function resetField() {
+  Object.assign(params, DEFAULTS);
+  particleUniforms.uQ.value = params.twist;
+  bloom.strength = params.bloomStrength;
+  bloom.radius = params.bloomRadius;
+  bloom.threshold = params.bloomThreshold;
+  finalPass.uniforms.uGrain.value = params.grain;
+  finalPass.uniforms.uVignette.value = params.vignette;
+  finalPass.uniforms.uCA.value = params.aberration;
+  setPaused(false);
+  pulseAge = 99;
+  sinceAutoPulse = 0;
+  autoOrbit = params.cameraAuto; // hand the camera back to the director,
+  autoBlend = 0;             // easing in so there's no jump
+  setPalette(params.palette);
+  setQuality(params.quality); // also refreshes every GUI control
+  applyUiVisibility();
+}
+
+// List control: shows every option as a clickable row (used instead of dropdowns)
+const listControls = [];
+function addList(folder, obj, prop, options, label, onPick) {
+  const values = Array.isArray(options) ? options : Object.keys(options);
+  const wrap = document.createElement('div');
+  wrap.className = 'gui-list';
+  const title = document.createElement('div');
+  title.className = 'gui-list-title';
+  title.textContent = label;
+  wrap.appendChild(title);
+  const items = values.map(v => {
+    const item = document.createElement('div');
+    item.className = 'gui-list-item';
+    item.textContent = v;
+    item.tabIndex = 0;
+    const pick = () => { obj[prop] = v; if (onPick) onPick(v); refreshGui(); };
+    item.addEventListener('click', pick);
+    item.addEventListener('keydown', e => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); pick(); }
+    });
+    wrap.appendChild(item);
+    return item;
+  });
+  const update = () => items.forEach((item, i) => item.classList.toggle('active', obj[prop] === values[i]));
+  folder.$children.appendChild(wrap);
+  listControls.push(update);
+  update();
+}
+// Sync every control (sliders, toggles and lists) with params
+function refreshGui() {
+  gui.controllersRecursive().forEach(c => c.updateDisplay());
+  listControls.forEach(update => update());
+}
+
+const gui = new GUI({ title: 'FIELD CONTROL' });
+gui.domElement.classList.add('gui-intro');
+gui.close(); // starts collapsed for a clean frame; click the title to open
+gui.add({ reset: resetField }, 'reset').name('⟲ reset to perfect field  [R]');
+
+const fField = gui.addFolder('Field');
+fField.add(params, 'twist', 0.1, 5, 0.0001).name('twist ratio q').listen()
+  .onChange(v => {
+    particleUniforms.uQ.value = v;
+    // highlight the matching preset, or none if q is off-preset
+    params.twistPreset = Object.keys(TWIST_PRESETS).find(k => Math.abs(TWIST_PRESETS[k] - v) < 1e-4) || '';
+    listControls.forEach(update => update());
+  });
+addList(fField, params, 'twistPreset', TWIST_PRESETS, 'twist preset',
+  k => { params.twist = TWIST_PRESETS[k]; particleUniforms.uQ.value = params.twist; });
+fField.add(params, 'flowSpeed', 0, 3, 0.01).name('flow speed');
+fField.add(params, 'R', 1.5, 5, 0.01).name('major radius R')
+  .onChange(v => { if (params.r > v * 0.9) params.r = v * 0.9; });
+fField.add(params, 'r', 0.3, 2.4, 0.01).name('minor radius r').listen()
+  .onChange(v => { if (v > params.R * 0.9) params.r = params.R * 0.9; });
+fField.add(params, 'shells', 1, 5, 1).name('shell count');
+fField.add(params, 'lineCount', 1, 16, 1).name('lines / shell');
+fField.add(params, 'axisBoost', 0, 0.9, 0.01).name('axis acceleration');
+fField.add(params, 'shear', -0.6, 0.6, 0.01).name('twist shear');
+fField.add(params, 'vortex').name('central vortex');
+addList(fField, params, 'vortexMode', ['Fountain (up the core)', 'Sink (down the core)'], 'vortex flow');
+fField.add(params, 'mouseAttract', 0, 1, 0.01).name('mouse attractor');
+
+const fRender = gui.addFolder('Render');
+addList(fRender, params, 'quality', Object.keys(QUALITY), 'quality', setQuality);
+fRender.add(params, 'particles', 10000, MAX_PARTICLES, 1000).name('particle count').onChange(setParticleCount);
+fRender.add(params, 'trail', 0, 0.8, 0.01).name('trail length (s)');
+fRender.add(params, 'size', 0.006, 0.05, 0.001).name('particle size');
+fRender.add(params, 'brightness', 0.1, 3, 0.01).name('brightness');
+addList(fRender, params, 'palette', PALETTE_KEYS, 'palette', setPalette);
+
+const fBloom = gui.addFolder('Bloom');
+fBloom.add(params, 'bloomStrength', 0, 3, 0.01).name('strength').onChange(v => (bloom.strength = v));
+fBloom.add(params, 'bloomRadius', 0, 1.5, 0.01).name('radius').onChange(v => (bloom.radius = v));
+fBloom.add(params, 'bloomThreshold', 0, 1.5, 0.01).name('threshold').onChange(v => (bloom.threshold = v));
+
+const fPost = gui.addFolder('Lens');
+fPost.add(params, 'exposure', 0.2, 3, 0.01).name('exposure');
+fPost.add(params, 'grain', 0, 0.2, 0.001).name('film grain').onChange(v => (finalPass.uniforms.uGrain.value = v));
+fPost.add(params, 'vignette', 0, 1, 0.01).name('vignette').onChange(v => (finalPass.uniforms.uVignette.value = v));
+fPost.add(params, 'aberration', 0, 0.06, 0.001).name('chromatic ab.').onChange(v => (finalPass.uniforms.uCA.value = v));
+fPost.close();
+
+const fDisplay = gui.addFolder('Display');
+fDisplay.add(params, 'grid').name('guide grid');
+fDisplay.add(params, 'hud').name('HUD').onChange(applyUiVisibility);
+fDisplay.add(params, 'cameraAuto').name('camera auto-orbit');
+fDisplay.add(params, 'cameraHold', 2, 120, 1).name('hold after drag (s)');
+fDisplay.add(params, 'autoPulse').name('auto pulse');
+fDisplay.add(params, 'pulseInterval', 2, 20, 0.5).name('pulse every (s)');
+fDisplay.add({ pulse: triggerPulse }, 'pulse').name('⚡ trigger pulse  [P]');
+fDisplay.add({ pause: () => setPaused(!paused) }, 'pause').name('❚❚ pause / resume  [SPACE]');
+
+window.addEventListener('keydown', e => {
+  if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT')) return;
+  switch (e.code) {
+    case 'Space': e.preventDefault(); setPaused(!paused); break;
+    case 'KeyH': uiHidden = !uiHidden; applyUiVisibility(); break;
+    case 'KeyP': triggerPulse(); break;
+    case 'KeyR': resetField(); break;
+    case 'Digit1': setPalette(PALETTE_KEYS[0]); break;
+    case 'Digit2': setPalette(PALETTE_KEYS[1]); break;
+    case 'Digit3': setPalette(PALETTE_KEYS[2]); break;
+    case 'Digit4': setPalette(PALETTE_KEYS[3]); break;
+  }
+});
+
+// Mouse attractor: track the pointer, rebuild the world-space ray every frame
+const mouseNDC = new THREE.Vector2(9, 9);
+const raycaster = new THREE.Raycaster();
+let mouseInside = false, lastMouseMove = -99;
+renderer.domElement.addEventListener('pointermove', e => {
+  mouseNDC.set((e.clientX / window.innerWidth) * 2 - 1, -(e.clientY / window.innerHeight) * 2 + 1);
+  mouseInside = true;
+  lastMouseMove = realTime;
+});
+renderer.domElement.addEventListener('pointerleave', () => { mouseInside = false; });
+
+/* ============================================================================
+   9. CAMERA DIRECTOR (intro + auto-orbit)
+   ----------------------------------------------------------------------------
+   After you drag or zoom, the camera holds your framing for params.cameraHold
+   seconds, then eases back into the slow orbit (or never, if cameraAuto is off).
+   ========================================================================== */
+
+const INTRO = { burstStart: 0.25, burstDur: 3.0, pullStart: 0.6, pullDur: 4.0, hudAt: 2.9, controlsAt: 4.4 };
+const easeInOutCubic = t => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
+const BASE_FOV = 42;
+
+let autoOrbit = true, autoBlend = 1, userDragging = false, lastInteraction = -99;
+controls.addEventListener('start', () => { userDragging = true; autoOrbit = false; autoBlend = 0; });
+controls.addEventListener('end', () => { userDragging = false; lastInteraction = realTime; });
+
+const baseRadius = () => 2.45 * (params.R + params.r * 1.6);
+const sph = new THREE.Spherical();
+const tmpV = new THREE.Vector3();
+
+function directCamera(dtReal, t) {
+  // ---- intro: start close and wide, pull back to reveal the whole torus ----
+  if (t < INTRO.controlsAt) {
+    const k = easeInOutCubic(THREE.MathUtils.clamp((t - INTRO.pullStart) / INTRO.pullDur, 0, 1));
+    sph.set(THREE.MathUtils.lerp(6.0, baseRadius(), k), THREE.MathUtils.lerp(1.42, 1.17, k), 0.6 + t * 0.05);
+    camera.position.setFromSpherical(sph).add(controls.target);
+    camera.fov = THREE.MathUtils.lerp(64, BASE_FOV, k);
+    camera.updateProjectionMatrix();
+    camera.lookAt(controls.target);
+    return;
+  }
+  if (!controls.enabled) { controls.enabled = true; lastInteraction = t; }
+
+  // ---- hold the user's framing, then resume auto-orbit after params.cameraHold seconds ----
+  if (!params.cameraAuto) { autoOrbit = false; autoBlend = 0; }
+  else if (!autoOrbit && !userDragging && t - lastInteraction > params.cameraHold) autoOrbit = true;
+
+  if (autoOrbit) {
+    autoBlend = Math.min(1, autoBlend + dtReal / 2.5);    // ease back in
+    const b = autoBlend * autoBlend;
+    sph.setFromVector3(tmpV.copy(camera.position).sub(controls.target));
+    sph.theta += dtReal * 0.055 * b;                               // slow orbit
+    const elDesired = 1.17 + 0.12 * Math.sin(t * 0.07);             // gentle crane
+    sph.phi += (elDesired - sph.phi) * (1 - Math.exp(-dtReal * 0.35)) * b;
+    const rDesired = baseRadius() * (1 + 0.09 * Math.sin(t * 0.045)); // slow dolly
+    sph.radius += (rDesired - sph.radius) * (1 - Math.exp(-dtReal * 0.3)) * b;
+    camera.position.setFromSpherical(sph).add(controls.target);
+    const fovDesired = BASE_FOV + 2.6 * Math.sin(t * 0.09);         // FOV breathing
+    camera.fov += (fovDesired - camera.fov) * (1 - Math.exp(-dtReal * 0.8)) * b;
+    camera.updateProjectionMatrix();
+  }
+  controls.update();
+}
+
+/* ============================================================================
+   10. ANIMATION LOOP
+   ========================================================================== */
+
+const clock = new THREE.Clock();
+let realTime = 0, fieldTime = 0, timeScale = 1;
+const shellPhase = [0, 0, 0, 0, 0];
+let vortexPhase = 0, vortexSpin = 0, vortexMix = 1, gridOpacity = 0, mouseStrength = 0, platePhase = 0;
+const centerNDC = new THREE.Vector3();
+const lerpK = (rate, dt) => 1 - Math.exp(-rate * dt);
+
+const BOOT_LINES = [
+  'TORUS-7 FIELD CORE ............ IGNITION',
+  'CONTAINMENT LATTICE ........... OK',
+  'POLOIDAL / TOROIDAL SYNC ...... LOCKED',
+  'VORTEX INJECTOR ............... ONLINE',
+];
+
+function frame() {
+  const dtReal = Math.min(clock.getDelta(), 0.05);
+  realTime += dtReal;
+
+  // smooth pause (time eases to a stop: "bullet time")
+  timeScale += (targetTimeScale - timeScale) * lerpK(7, dtReal);
+  if (Math.abs(timeScale - targetTimeScale) < 1e-3) timeScale = targetTimeScale;
+  const dt = dtReal * timeScale;
+  fieldTime += dt;
+
+  // ---- per-shell phases (speeds differ; inner shells run faster) ----
+  const n = params.shells;
+  for (let i = 0; i < 5; i++) {
+    const rate = params.flowSpeed * (0.55 + 0.65 * (n > 1 ? 1 - i / (n - 1) : 1));
+    particleUniforms.uShellRate.value[i] = rate;            // unscaled rate → trails survive pause
+    shellPhase[i] = (shellPhase[i] + dt * rate) % SPAN_W;
+    particleUniforms.uShellPhase.value[i] = shellPhase[i];
+  }
+  const vDir = params.vortexMode.startsWith('Fountain') ? -1 : 1;
+  const vRate = params.flowSpeed * 0.9;
+  vortexPhase = (((vortexPhase + dt * vRate * vDir) % VORTEX_WRAP) + VORTEX_WRAP) % VORTEX_WRAP;
+  vortexSpin = (vortexSpin + dt * 0.04) % TAU;
+  vortexMix += ((params.vortex ? 1 : 0) - vortexMix) * lerpK(3, dtReal);
+
+  // ---- pulses ----
+  pulseAge += dt;
+  sinceAutoPulse += dt;
+  if (params.autoPulse && sinceAutoPulse > params.pulseInterval && realTime > INTRO.controlsAt) triggerPulse();
+  const pulseLevel = pulseAge < 7 ? Math.exp(-pulseAge * 0.5) * Math.min(1, pulseAge / 0.2) : 0;
+
+  // ---- palette crossfade ----
+  pal.forEach((c, i) => c.lerp(palTarget[i], lerpK(3, dtReal)));
+  specMix += ((params.palette === 'Spectrum' ? 1 : 0) - specMix) * lerpK(3, dtReal);
+  particleUniforms.uSpecMix.value = specMix;
+  particleUniforms.uSpecRot.value = (particleUniforms.uSpecRot.value + dt * 0.008) % 1; // bands drift slowly
+  setHudAccent();
+
+  // ---- intro timeline ----
+  const intro = THREE.MathUtils.clamp((realTime - INTRO.burstStart) / INTRO.burstDur, 0, 1);
+  const exposureRamp = THREE.MathUtils.smoothstep(realTime, 0.1, 1.0);
+  if (realTime > INTRO.hudAt && !hudEl.classList.contains('on')) {
+    hudEl.classList.add('on');
+    gui.domElement.classList.remove('gui-intro');
+  }
+  const bootN = Math.floor(THREE.MathUtils.clamp((realTime - 0.3) / 0.45, 0, BOOT_LINES.length));
+  bootEl.textContent = BOOT_LINES.slice(0, bootN).join('\n');
+  bootEl.style.opacity = realTime < 3.2 ? '1' : '0';
+
+  // ---- camera ----
+  directCamera(dtReal, realTime);
+
+  // ---- mouse attractor ray ----
+  const mouseActive = mouseInside && realTime > INTRO.controlsAt && realTime - lastMouseMove < 3 && !userDragging;
+  mouseStrength += ((mouseActive ? params.mouseAttract : 0) - mouseStrength) * lerpK(3, dtReal);
+  raycaster.setFromCamera(mouseNDC, camera);
+  particleUniforms.uMouseO.value.copy(raycaster.ray.origin);
+  particleUniforms.uMouseD.value.copy(raycaster.ray.direction);
+  particleUniforms.uMouseStrength.value = mouseStrength;
+
+  // ---- particle uniforms ----
+  const U = particleUniforms;
+  U.uTime.value = fieldTime;
+  U.uShellCount.value = n;
+  U.uQ.value = params.twist;
+  U.uShear.value = params.shear;
+  U.uLineCount.value = params.lineCount;
+  U.uR.value += (params.R - U.uR.value) * lerpK(6, dtReal);       // eased geometry changes
+  U.uMinorR.value += (params.r - U.uMinorR.value) * lerpK(6, dtReal);
+  U.uKappa.value = params.axisBoost;
+  U.uVortexPhase.value = vortexPhase;
+  U.uVortexRate.value = vRate;
+  U.uVortexDir.value = vDir;
+  U.uVortexSpin.value = vortexSpin;
+  U.uVortexMix.value = vortexMix;
+  U.uTrail.value = params.trail;
+  U.uIntro.value = intro;
+  U.uPulseAge.value = pulseAge;
+  U.uSize.value = params.size;
+  U.uBrightness.value = params.brightness * Math.pow(150000 / params.particles, 0.55);
+  U.uCamDist.value = camera.position.distanceTo(controls.target);
+
+  // ---- grid & plate: fade in and out on a slow cycle ----
+  const breathe = 0.3 + 0.7 * THREE.MathUtils.smoothstep(Math.sin(realTime * 0.21), -0.5, 0.7);
+  gridOpacity += ((params.grid ? 1 : 0) * (realTime > 2.0 ? 1 : 0) - gridOpacity) * lerpK(1.5, dtReal);
+  grid.material.uniforms.uOpacity.value = 0.11 * gridOpacity * breathe;
+  grid.material.uniforms.uTime.value = realTime;
+  platePhase += dtReal * 0.03;
+  plate.material.uniforms.uRot.value = platePhase;
+  plate.material.uniforms.uScale.value = U.uR.value * 0.85;
+  plate.material.uniforms.uY.value = -(U.uMinorR.value + 0.6) * 2.25;
+  plate.material.uniforms.uOpacity.value = 0.11 * gridOpacity;
+
+  dust.material.uniforms.uTime.value = realTime;
+
+  // haze: centre glow follows the projected torus centre
+  centerNDC.set(0, 0, 0).project(camera);
+  haze.material.uniforms.uCenter.value.set(centerNDC.x, centerNDC.y);
+  haze.material.uniforms.uTime.value = realTime;
+  haze.material.uniforms.uAz.value = Math.atan2(camera.position.x, camera.position.z);
+  haze.material.uniforms.uIntro.value = intro;
+
+  finalPass.uniforms.uTime.value = realTime;
+  finalPass.uniforms.uExposure.value = params.exposure * exposureRamp;
+
+  updateHUD(dtReal, realTime, pulseLevel);
+  composer.render();
+}
+
+applyUiVisibility();
+renderer.setAnimationLoop(frame);
+</script>
+</body>
+</html>
